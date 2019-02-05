@@ -4,6 +4,7 @@ const util = require('util');
 
 const gzipSize = require('gzip-size');
 const fetch = require('node-fetch');
+const prettyBytes = require('pretty-bytes');
 const chalk = new require('chalk').constructor({ level: 4 });
 
 const readdir = util.promisify(fs.readdir);
@@ -153,20 +154,34 @@ async function main() {
   // One letter references, so it's easier to get the spacing right.
   const y = chalk.yellow;
   const g = chalk.green;
-  const r = chalk.r;
+  const r = chalk.red;
 
   for (const change of buildChanges) {
     if (change.beforeSize && change.afterSize) {
-      let name = change.beforeName;
+      let size;
+
+      if (change.beforeSize === change.afterSize) {
+        size = `${prettyBytes(change.afterSize)} -> no change`;
+      } else {
+        const color = change.afterSize > change.beforeSize ? r : g;
+        const sizeDiff = prettyBytes(change.afterSize - change.beforeSize, { signed: true });
+        const percent = Math.round((change.afterSize / change.beforeSize) * 100);
+
+        size = `${prettyBytes(change.beforeSize)} -> ${prettyBytes(change.afterSize)}` +
+          ' (' +
+          color(`${sizeDiff}, ${percent}%`) +
+          ')';
+      }
+
+      console.log(`  ${y('CHANGED')} ${change.beforeName} - ${size}`);
 
       if (change.beforeName !== change.afterName) {
-        name += ' -> ' + change.afterName;
+        console.log(`    Renamed from: ${change.beforeName}`);
       }
-      console.log(`  ${y('CHANGED')} ${name} : ${change.beforeSize} -> ${change.afterSize}`);
     } else if (!change.beforeSize) {
-      console.log(`  ${g('ADDED')}   ${change.afterName} : ${change.afterSize}`);
+      console.log(`  ${g('ADDED')}   ${change.afterName} - ${prettyBytes(change.afterSize)}`);
     } else {
-      console.log(`  ${r('REMOVED')} ${change.beforeName} : ${change.beforeSize}`);
+      console.log(`  ${r('REMOVED')} ${change.beforeName} - was ${prettyBytes(change.beforeSize)}`);
     }
   }
 }
