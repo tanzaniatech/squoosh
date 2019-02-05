@@ -166,7 +166,7 @@ async function main() {
       } else {
         const color = change.afterSize > change.beforeSize ? r : g;
         const sizeDiff = prettyBytes(change.afterSize - change.beforeSize, { signed: true });
-        const percent = Math.round((change.afterSize / change.beforeSize) * 100);
+        const percent = Math.round((change.afterSize / change.beforeSize) * 10000) / 100;
 
         size = `${prettyBytes(change.beforeSize)} -> ${prettyBytes(change.afterSize)}` +
           ' (' +
