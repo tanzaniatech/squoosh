@@ -4,11 +4,22 @@ const util = require('util');
 
 const gzipSize = require('gzip-size');
 const fetch = require('node-fetch');
+const chalk = require('chalk');
 
 const readdir = util.promisify(fs.readdir);
 
-function getJson(url) {
-  return fetch(url).then(r => r.json());
+function getTravis(path) {
+  return fetch('https://api.travis-ci.org' + path, {
+    headers: { 'Travis-API-Version': '3' },
+  });
+}
+
+function getTravisJson(path) {
+  return getTravis(path).then(r => r.json());
+}
+
+function getTravisText(path) {
+  return getTravis(path).then(r => r.text());
 }
 
 async function dirToInfoArray(startPath, {
@@ -43,6 +54,21 @@ async function dirToInfoArray(startPath, {
   return result;
 }
 
+/**
+ * Find a match in buildInfo that looks like a match for path except a hash change.
+ */
+function findHashedMatch(name, buildInfo) {
+  const nameParts = /^(.+\.)[a-f0-9]+(\..+)$/.exec(name);
+  if (!nameParts) return;
+
+  const pathStart = nameParts[1];
+  const pathEnd = nameParts[2];
+  const matchingEntry = buildInfo.find(
+    entry => entry.name.startsWith(pathStart) && entry.name.endsWith(pathEnd)
+  );
+  return matchingEntry;
+}
+
 
 const buildSizePrefix = '=== BUILD SIZES: ';
 const buildSizePrefixRe = /^=== BUILD SIZES: (.+)$/m;
@@ -53,9 +79,9 @@ async function main() {
   console.log(buildSizePrefix + JSON.stringify(buildInfo));
 
   // Get the previous results.
-  const branchData = await getJson('https://api.travis-ci.org/repos/GoogleChromeLabs/squoosh/branches/size-report');
-  const jobId = branchData.branch.job_ids[0];
-  const { log } = await getJson(`https://api.travis-ci.org/jobs/${jobId}`);
+  const buildData = await getTravisJson('/repo/GoogleChromeLabs%2Fsquoosh/builds?branch.name=size-report&state=passed&limit=1');
+  const jobUrl = buildData.builds[0].jobs[0]['@href'];
+  const log = await getTravisText(jobUrl + '/log.txt');
   const reResult = buildSizePrefixRe.exec(log);
 
   console.log('\nBuild change report:');
@@ -74,35 +100,42 @@ async function main() {
     return;
   }
 
-  // Entries are { name, beforeSize, afterSize }.
+  // Entries are { beforeName, afterName, beforeSize, afterSize }.
   const buildChanges = [];
   const alsoInPreviousBuild = new Set();
 
   for (const oldEntry of previousBuildInfo) {
-    const newEntry = buildInfo.find(entry => entry.name === oldEntry.name);
+    const newEntry = buildInfo.find(entry => entry.name === oldEntry.name) ||
+      findHashedMatch(oldEntry.name, buildInfo);
 
     if (!newEntry) {
       buildChanges.push({
-        name: oldEntry.name,
+        beforeName: oldEntry.name,
         beforeSize: oldEntry.gzipSize,
       });
-    } else {
-      alsoInPreviousBuild.add(newEntry);
-
-      if (oldEntry.gzipSize !== newEntry.gzipSize) {
-        buildChanges.push({
-          name: oldEntry.name,
-          beforeSize: oldEntry.gzipSize,
-          afterSize: newEntry.gzipSize,
-        });
-      }
+      continue;
     }
+
+    alsoInPreviousBuild.add(newEntry);
+
+    if (
+      oldEntry.gzipSize === newEntry.gzipSize &&
+      oldEntry.name === newEntry.name
+    ) continue;
+
+    buildChanges.push({
+      beforeName: oldEntry.name,
+      afterName: newEntry.name,
+      beforeSize: oldEntry.gzipSize,
+      afterSize: newEntry.gzipSize,
+    });
   }
 
   for (const newEntry of buildInfo) {
     if (alsoInPreviousBuild.has(newEntry)) continue;
+
     buildChanges.push({
-      name: newEntry.name,
+      afterName: newEntry.name,
       afterSize: newEntry.gzipSize,
     });
   }
@@ -112,16 +145,23 @@ async function main() {
     return;
   }
 
-  // Sort into name order. This makes it easier to compare files that have changed hash.
-  buildChanges.sort((a, b) => a.name > b.name ? 1 : -1);
+  // One letter references, so it's easier to get the spacing right.
+  const y = chalk.yellow;
+  const g = chalk.green;
+  const r = chalk.r;
 
   for (const change of buildChanges) {
     if (change.beforeSize && change.afterSize) {
-      console.log(`  CHANGED ${change.name} ${change.beforeSize} -> ${change.afterSize}`);
+      let name = change.beforeName;
+
+      if (change.beforeName !== change.afterName) {
+        name += ' -> ' + change.afterName;
+      }
+      console.log(`  ${y('CHANGED')} ${name} : ${change.beforeSize} -> ${change.afterSize}`);
     } else if (!change.beforeSize) {
-      console.log(`  ADDED   ${change.name} ${change.afterSize}`);
+      console.log(`  ${g('ADDED')}   ${change.afterName} : ${change.afterSize}`);
     } else {
-      console.log(`  REMOVED ${change.name} ${change.beforeSize}`);
+      console.log(`  ${r('REMOVED')} ${change.beforeName} : ${change.beforeSize}`);
     }
   }
 }
