@@ -7,6 +7,7 @@ const fetch = require('node-fetch');
 const chalk = require('chalk');
 
 const readdir = util.promisify(fs.readdir);
+const stat = util.promisify(fs.stat);
 
 function getTravis(path) {
   return fetch('https://api.travis-ci.org' + path, {
@@ -33,9 +34,13 @@ async function dirToInfoArray(startPath, {
     const entryPath = path.join(startPath, entry.name);
     if (entry.isFile()) {
       promises.push(async function() {
+        const gzipPromise = gzipSize.file(entryPath);
+        const statPromise = stat(entryPath);
+
         result.push({
           name: namePrefix + entry.name,
-          gzipSize: await gzipSize.file(entryPath),
+          gzipSize: await gzipPromise,
+          size: (await statPromise).size,
         });
       }());
     } else if (entry.isDirectory()) {
@@ -119,7 +124,7 @@ async function main() {
     alsoInPreviousBuild.add(newEntry);
 
     if (
-      oldEntry.gzipSize === newEntry.gzipSize &&
+      oldEntry.size === newEntry.size &&
       oldEntry.name === newEntry.name
     ) continue;
 
