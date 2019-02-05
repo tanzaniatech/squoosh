@@ -25,6 +25,9 @@ function getTravisText(path) {
   return getTravis(path).then(r => r.text());
 }
 
+/**
+ * Recursively-read a directory and turn it into an array of { name, size, gzipSize }
+ */
 async function dirToInfoArray(startPath, {
   namePrefix = '',
 } = {}) {
@@ -57,57 +60,41 @@ async function dirToInfoArray(startPath, {
   }
 
   await Promise.all(promises);
-
   return result;
 }
 
 /**
- * Find a match in buildInfo that looks like a match for path except a hash change.
+ * Try to treat two entries with different file name hashes as the same file.
  */
 function findHashedMatch(name, buildInfo) {
   const nameParts = /^(.+\.)[a-f0-9]+(\..+)$/.exec(name);
   if (!nameParts) return;
 
-  const pathStart = nameParts[1];
-  const pathEnd = nameParts[2];
-  const matchingEntry = buildInfo.find(
-    entry => entry.name.startsWith(pathStart) && entry.name.endsWith(pathEnd)
-  );
+  const matchRe = new RegExp(`^${escapeRE(nameParts[1])}[a-f0-9]+${escapeRE(nameParts[2])}$`);
+  const matchingEntry = buildInfo.find(entry => matchRe.test(entry.name));
   return matchingEntry;
 }
-
 
 const buildSizePrefix = '=== BUILD SIZES: ';
 const buildSizePrefixRe = new RegExp(`^${escapeRE(buildSizePrefix)}(.+)$`, 'm');
 
-async function main() {
-  // Output the current build sizes for later retrieval.
-  const buildInfo = await dirToInfoArray(__dirname + '/../build');
-  console.log(buildSizePrefix + JSON.stringify(buildInfo));
-
-  // Get the previous results.
+async function getPreviousBuildInfo() {
   const buildData = await getTravisJson('/repo/GoogleChromeLabs%2Fsquoosh/builds?branch.name=size-report&state=passed&limit=1');
   const jobUrl = buildData.builds[0].jobs[0]['@href'];
   const log = await getTravisText(jobUrl + '/log.txt');
   const reResult = buildSizePrefixRe.exec(log);
 
-  console.log('\nBuild change report:');
+  if (!reResult) return;
+  return JSON.parse(reResult[1]);
+}
 
-  if (!reResult) {
-    console.log(`  Couldn't find previous build info`);
-    return;
-  }
-
-  let previousBuildInfo;
-
-  try {
-    previousBuildInfo = JSON.parse(reResult[1]);
-  } catch (err) {
-    console.log(`  Couldn't parse previous build info`);
-    return;
-  }
-
-  // Entries are { beforeName, afterName, beforeSize, afterSize }.
+/**
+ * Generate an array that represents the difference between builds.
+ * Returns an array of { beforeName, afterName, beforeSize, afterSize }.
+ * Sizes are gzipped size.
+ * Before/after properties are missing if resource isn't in the previous/new build.
+ */
+function getChanges(previousBuildInfo, buildInfo) {
   const buildChanges = [];
   const alsoInPreviousBuild = new Set();
 
@@ -115,6 +102,7 @@ async function main() {
     const newEntry = buildInfo.find(entry => entry.name === oldEntry.name) ||
       findHashedMatch(oldEntry.name, buildInfo);
 
+    // Entry is in previous build, but not the new build.
     if (!newEntry) {
       buildChanges.push({
         beforeName: oldEntry.name,
@@ -123,13 +111,18 @@ async function main() {
       continue;
     }
 
+    // Mark this entry so we know we've dealt with it.
     alsoInPreviousBuild.add(newEntry);
 
+    // If they're the same, just ignore.
+    // Using size rather than gzip size. I've seen different platforms produce different zipped
+    // sizes.
     if (
       oldEntry.size === newEntry.size &&
       oldEntry.name === newEntry.name
     ) continue;
 
+    // Entry is in both builds (maybe renamed).
     buildChanges.push({
       beforeName: oldEntry.name,
       afterName: newEntry.name,
@@ -138,6 +131,7 @@ async function main() {
     });
   }
 
+  // Look for entries that are only in the new build.
   for (const newEntry of buildInfo) {
     if (alsoInPreviousBuild.has(newEntry)) continue;
 
@@ -146,6 +140,31 @@ async function main() {
       afterSize: newEntry.gzipSize,
     });
   }
+
+  return buildChanges;
+}
+
+async function main() {
+  // Output the current build sizes for later retrieval.
+  const buildInfo = await dirToInfoArray(__dirname + '/../build');
+  console.log(buildSizePrefix + JSON.stringify(buildInfo));
+  console.log('\nBuild change report:');
+
+  let previousBuildInfo;
+
+  try {
+    previousBuildInfo = await getPreviousBuildInfo();
+  } catch (err) {
+    console.log(`  Couldn't parse previous build info`);
+    return;
+  }
+
+  if (!previousBuildInfo) {
+    console.log(`  Couldn't find previous build info`);
+    return;
+  }
+
+  const buildChanges = getChanges(buildInfo, previousBuildInfo);
 
   if (buildChanges.length === 0) {
     console.log('  No changes');
@@ -158,31 +177,39 @@ async function main() {
   const r = chalk.red;
 
   for (const change of buildChanges) {
-    if (change.beforeSize && change.afterSize) {
-      let size;
-
-      if (change.beforeSize === change.afterSize) {
-        size = `${prettyBytes(change.afterSize)} -> no change`;
-      } else {
-        const color = change.afterSize > change.beforeSize ? r : g;
-        const sizeDiff = prettyBytes(change.afterSize - change.beforeSize, { signed: true });
-        const percent = Math.round((change.afterSize / change.beforeSize) * 10000) / 100;
-
-        size = `${prettyBytes(change.beforeSize)} -> ${prettyBytes(change.afterSize)}` +
-          ' (' +
-          color(`${sizeDiff}, ${percent}%`) +
-          ')';
-      }
-
-      console.log(`  ${y('CHANGED')} ${change.afterName} - ${size}`);
-
-      if (change.beforeName !== change.afterName) {
-        console.log(`    Renamed from: ${change.beforeName}`);
-      }
-    } else if (!change.beforeSize) {
+    // New file.
+    if (!change.beforeSize) {
       console.log(`  ${g('ADDED')}   ${change.afterName} - ${prettyBytes(change.afterSize)}`);
-    } else {
+      continue;
+    }
+
+    // Removed file.
+    if (!change.afterSize) {
       console.log(`  ${r('REMOVED')} ${change.beforeName} - was ${prettyBytes(change.beforeSize)}`);
+      continue;
+    }
+
+    // Changed file.
+    let size;
+
+    if (change.beforeSize === change.afterSize) {
+      // Just renamed.
+      size = `${prettyBytes(change.afterSize)} -> no change`;
+    } else {
+      const color = change.afterSize > change.beforeSize ? r : g;
+      const sizeDiff = prettyBytes(change.afterSize - change.beforeSize, { signed: true });
+      const percent = Math.round((change.afterSize / change.beforeSize) * 10000) / 100;
+
+      size = `${prettyBytes(change.beforeSize)} -> ${prettyBytes(change.afterSize)}` +
+        ' (' +
+        color(`${sizeDiff}, ${percent}%`) +
+        ')';
+    }
+
+    console.log(`  ${y('CHANGED')} ${change.afterName} - ${size}`);
+
+    if (change.beforeName !== change.afterName) {
+      console.log(`    Renamed from: ${change.beforeName}`);
     }
   }
 }
