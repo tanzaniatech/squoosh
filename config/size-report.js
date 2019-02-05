@@ -49,9 +49,8 @@ const buildSizePrefixRe = /^=== BUILD SIZES: (.+)$/m;
 
 async function main() {
   // Output the current build sizes for later retrieval.
-  const result = await dirToInfoArray(__dirname + '/../build');
-  console.log(buildSizePrefix + JSON.stringify(result));
-  return;
+  const buildInfo = await dirToInfoArray(__dirname + '/../build');
+  console.log(buildSizePrefix + JSON.stringify(buildInfo));
 
   // Get the previous results.
   const branchData = await getJson('https://api.travis-ci.org/repos/GoogleChromeLabs/squoosh/branches/size-report');
@@ -66,56 +65,63 @@ async function main() {
     return;
   }
 
-  let previousResult;
+  let previousBuildInfo;
 
   try {
-    previousResult = JSON.parse(reResult[1]);
+    previousBuildInfo = JSON.parse(reResult[1]);
   } catch (err) {
     console.log(`Couldn't parse previous build info`);
     return;
   }
 
-  // { path: entry }
-  const deleted = {};
-  // { path: { before, after } }
-  const changed = {};
+  // Entries are { name, beforeSize, afterSize }.
+  const buildChanges = [];
+  const alsoInPreviousBuild = new Set();
 
-  console.log(result);
-  for (const key of Object.keys(previousResult)) {
-    if (!(key in result)) {
-      console.log(key, result[key]);
-      deleted[key] = previousResult[key];
+  for (const oldEntry of previousBuildInfo) {
+    const newEntry = buildInfo.find(entry => entry.name === oldEntry.name);
+
+    if (!newEntry) {
+      buildChanges.push({
+        name: oldEntry.name,
+        beforeSize: oldEntry.gzipSize,
+      });
     } else {
-      if (previousResult[key].gzipSize !== result[key].gzipSize) {
-        changed[key] = { before: previousResult[key], after: result[key] };
+      alsoInPreviousBuild.add(newEntry);
+
+      if (oldEntry.gzipSize !== newEntry.gzipSize) {
+        buildChanges.push({
+          name: oldEntry.name,
+          beforeSize: oldEntry.gzipSize,
+          afterSize: newEntry.gzipSize,
+        });
       }
-
-      // Remove the entry so only new entries are left.
-      delete result[key];
     }
   }
 
-  // The remaining items in result must be new.
-  const created = { ...result };
-
-  if (Object.keys(deleted).length) {
-    console.log('Deleted');
-    for (const key of Object.keys(deleted)) {
-      console.log(`  ${key} - ${deleted[key].gzipSize}`);
-    }
+  for (const newEntry of buildInfo) {
+    if (alsoInPreviousBuild.has(newEntry)) continue;
+    buildChanges.push({
+      name: newEntry.name,
+      afterSize: newEntry.gzipSize,
+    });
   }
 
-  if (Object.keys(changed).length) {
-    console.log('Changed');
-    for (const key of Object.keys(changed)) {
-      console.log(`  ${key} - ${changed[key].before.gzipSize} -> ${changed[key].before.gzipSize}`);
-    }
+  if (buildChanges.length === 0) {
+    console.log('  No changes');
+    return;
   }
 
-  if (Object.keys(created).length) {
-    console.log('Created');
-    for (const key of Object.keys(created)) {
-      console.log(`  ${key} - ${created[key].gzipSize}`);
+  // Sort into name order. This makes it easier to compare files that have changed hash.
+  buildChanges.sort((a, b) => a.name > b.name ? 1 : -1);
+
+  for (const change of buildChanges) {
+    if (change.beforeSize && change.afterSize) {
+      console.log(`  CHANGED ${change.name} ${change.beforeSize} -> ${change.afterSize}`);
+    } else if (!change.beforeSize) {
+      console.log(`  ADDED   ${change.name} ${change.afterSize}`);
+    } else {
+      console.log(`  REMOVED ${change.name} ${change.beforeSize}`);
     }
   }
 }
