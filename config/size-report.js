@@ -61,7 +61,7 @@ async function main() {
   console.log('\nBuild change report:');
 
   if (!reResult) {
-    console.log(`Couldn't find previous build info`);
+    console.log(`  Couldn't find previous build info`);
     return;
   }
 
@@ -70,7 +70,7 @@ async function main() {
   try {
     previousBuildInfo = JSON.parse(reResult[1]);
   } catch (err) {
-    console.log(`Couldn't parse previous build info`);
+    console.log(`  Couldn't parse previous build info`);
     return;
   }
 
