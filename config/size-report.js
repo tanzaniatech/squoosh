@@ -174,7 +174,7 @@ async function main() {
           ')';
       }
 
-      console.log(`  ${y('CHANGED')} ${change.beforeName} - ${size}`);
+      console.log(`  ${y('CHANGED')} ${change.afterName} - ${size}`);
 
       if (change.beforeName !== change.afterName) {
         console.log(`    Renamed from: ${change.beforeName}`);
