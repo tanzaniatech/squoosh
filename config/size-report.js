@@ -5,6 +5,7 @@ const util = require('util');
 const gzipSize = require('gzip-size');
 const fetch = require('node-fetch');
 const prettyBytes = require('pretty-bytes');
+const escapeRE = require('escape-string-regexp');
 const chalk = new require('chalk').constructor({ level: 4 });
 
 const readdir = util.promisify(fs.readdir);
@@ -77,7 +78,7 @@ function findHashedMatch(name, buildInfo) {
 
 
 const buildSizePrefix = '=== BUILD SIZES: ';
-const buildSizePrefixRe = /^=== BUILD SIZES: (.+)$/m;
+const buildSizePrefixRe = new RegExp(`^${escapeRE(buildSizePrefix)}(.+)$`, 'm');
 
 async function main() {
   // Output the current build sizes for later retrieval.
