@@ -4,7 +4,7 @@ const util = require('util');
 
 const gzipSize = require('gzip-size');
 const fetch = require('node-fetch');
-const chalk = require('chalk');
+const chalk = new require('chalk').constructor({ level: 4 });
 
 const readdir = util.promisify(fs.readdir);
 const stat = util.promisify(fs.stat);
